@@ -3,7 +3,7 @@
 ## 1. Clone the code from this repository
 
 ```bash
-git clone https://github.com/0xtnpxsgt/allora-worker-x-reputer.git
+git clone https://github.com/PeterPedegru/allora-worker-x-reputer.git
 cd allora-worker-x-reputer
 ```
 
