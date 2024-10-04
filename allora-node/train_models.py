@@ -8,6 +8,7 @@ from sklearn.preprocessing import MinMaxScaler
 import joblib
 import logging
 from sklearn.model_selection import TimeSeriesSplit
+from ta import add_all_ta_features
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -24,6 +25,10 @@ def load_data(token_name):
 
 # Подготовка данных
 def prepare_data(data, look_back, feature_columns):
+    # Добавление технических индикаторов
+    data = add_all_ta_features(
+        data, open="Open", high="High", low="Low", close="Close", volume="Volume", fillna=True)
+    
     scaler = MinMaxScaler(feature_range=(0, 1))
     data_scaled = scaler.fit_transform(data[feature_columns])
     
@@ -38,14 +43,14 @@ def prepare_data(data, look_back, feature_columns):
     return X, Y, scaler
 
 # Создание модели
-def create_model(look_back, model_type='LSTM'):
+def create_model(look_back, input_dim, model_type='LSTM'):
     model = Sequential()
     if model_type == 'LSTM':
-        model.add(LSTM(100, return_sequences=True, input_shape=(look_back, len(feature_columns))))
+        model.add(LSTM(100, return_sequences=True, input_shape=(look_back, input_dim)))
         model.add(Dropout(0.2))
         model.add(LSTM(100, return_sequences=False))
     elif model_type == 'GRU':
-        model.add(GRU(100, return_sequences=True, input_shape=(look_back, len(feature_columns))))
+        model.add(GRU(100, return_sequences=True, input_shape=(look_back, input_dim)))
         model.add(Dropout(0.2))
         model.add(GRU(100, return_sequences=False))
     
@@ -61,7 +66,7 @@ def train_and_save_model(token_name, look_back, horizon, model_type='LSTM'):
         if data is None:
             return
         
-        feature_columns = ['Close', 'Volume']  # Можно добавить больше признаков
+        feature_columns = ['Close', 'Volume', 'volatility_bbm', 'trend_macd', 'momentum_rsi']  # Добавлены технические индикаторы
         X, Y, scaler = prepare_data(data, look_back, feature_columns)
         
         tscv = TimeSeriesSplit(n_splits=5)
@@ -72,7 +77,7 @@ def train_and_save_model(token_name, look_back, horizon, model_type='LSTM'):
             X_train, X_val = X[train_index], X[val_index]
             Y_train, Y_val = Y[train_index], Y[val_index]
             
-            model = create_model(look_back, model_type)
+            model = create_model(look_back, len(feature_columns), model_type)
             
             early_stopping = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
             model.fit(X_train, Y_train, epochs=50, batch_size=32, verbose=2, validation_data=(X_val, Y_val), callbacks=[early_stopping])
