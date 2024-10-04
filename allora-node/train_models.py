@@ -2,13 +2,14 @@ import numpy as np
 import pandas as pd
 import tensorflow as tf
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense, Dropout, GRU
+from tensorflow.keras.layers import LSTM, Dense, Dropout, GRU, Attention, TimeDistributed, Conv1D, MaxPooling1D, Flatten
 from tensorflow.keras.callbacks import EarlyStopping
 from sklearn.preprocessing import MinMaxScaler
 import joblib
 import logging
 from sklearn.model_selection import TimeSeriesSplit
 from ta import add_all_ta_features
+import optuna
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -43,21 +44,56 @@ def prepare_data(data, look_back, feature_columns):
     return X, Y, scaler
 
 # Создание модели
-def create_model(look_back, input_dim, model_type='LSTM'):
+def create_model(look_back, input_dim, model_type='LSTM', params=None):
     model = Sequential()
     if model_type == 'LSTM':
-        model.add(LSTM(100, return_sequences=True, input_shape=(look_back, input_dim)))
-        model.add(Dropout(0.2))
-        model.add(LSTM(100, return_sequences=False))
+        model.add(LSTM(params['units'], return_sequences=True, input_shape=(look_back, input_dim)))
+        model.add(Dropout(params['dropout']))
+        model.add(LSTM(params['units'], return_sequences=False))
     elif model_type == 'GRU':
-        model.add(GRU(100, return_sequences=True, input_shape=(look_back, input_dim)))
-        model.add(Dropout(0.2))
-        model.add(GRU(100, return_sequences=False))
+        model.add(GRU(params['units'], return_sequences=True, input_shape=(look_back, input_dim)))
+        model.add(Dropout(params['dropout']))
+        model.add(GRU(params['units'], return_sequences=False))
     
-    model.add(Dropout(0.2))
+    # Добавление Attention слоя
+    model.add(Attention())
+    
+    # Добавление Conv1D слоя
+    model.add(TimeDistributed(Conv1D(filters=params['filters'], kernel_size=params['kernel_size'], activation='relu')))
+    model.add(TimeDistributed(MaxPooling1D(pool_size=2)))
+    model.add(TimeDistributed(Flatten()))
+    
+    model.add(Dropout(params['dropout']))
     model.add(Dense(1))
     model.compile(optimizer='adam', loss='mean_squared_error')
     return model
+
+# Функция для оптимизации гиперпараметров с помощью Optuna
+def objective(trial, X, Y, look_back, input_dim, model_type):
+    params = {
+        'units': trial.suggest_int('units', 50, 200),
+        'dropout': trial.suggest_float('dropout', 0.1, 0.5),
+        'filters': trial.suggest_int('filters', 32, 128),
+        'kernel_size': trial.suggest_int('kernel_size', 2, 5)
+    }
+    
+    tscv = TimeSeriesSplit(n_splits=5)
+    best_loss = float('inf')
+    
+    for train_index, val_index in tscv.split(X):
+        X_train, X_val = X[train_index], X[val_index]
+        Y_train, Y_val = Y[train_index], Y[val_index]
+        
+        model = create_model(look_back, input_dim, model_type, params)
+        
+        early_stopping = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
+        model.fit(X_train, Y_train, epochs=50, batch_size=32, verbose=0, validation_data=(X_val, Y_val), callbacks=[early_stopping])
+        
+        val_loss = model.evaluate(X_val, Y_val, verbose=0)
+        if val_loss < best_loss:
+            best_loss = val_loss
+    
+    return best_loss
 
 # Функция тренировки и сохранения модели
 def train_and_save_model(token_name, look_back, horizon, model_type='LSTM'):
@@ -69,23 +105,21 @@ def train_and_save_model(token_name, look_back, horizon, model_type='LSTM'):
         feature_columns = ['Close', 'Volume', 'volatility_bbm', 'trend_macd', 'momentum_rsi']  # Добавлены технические индикаторы
         X, Y, scaler = prepare_data(data, look_back, feature_columns)
         
-        tscv = TimeSeriesSplit(n_splits=5)
-        best_model = None
-        best_loss = float('inf')
+        study = optuna.create_study(direction='minimize')
+        study.optimize(lambda trial: objective(trial, X, Y, look_back, len(feature_columns), model_type), n_trials=50)
         
+        best_params = study.best_params
+        logging.info(f"Best hyperparameters: {best_params}")
+        
+        best_model = create_model(look_back, len(feature_columns), model_type, best_params)
+        
+        tscv = TimeSeriesSplit(n_splits=5)
         for train_index, val_index in tscv.split(X):
             X_train, X_val = X[train_index], X[val_index]
             Y_train, Y_val = Y[train_index], Y[val_index]
             
-            model = create_model(look_back, len(feature_columns), model_type)
-            
             early_stopping = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
-            model.fit(X_train, Y_train, epochs=50, batch_size=32, verbose=2, validation_data=(X_val, Y_val), callbacks=[early_stopping])
-            
-            val_loss = model.evaluate(X_val, Y_val, verbose=0)
-            if val_loss < best_loss:
-                best_loss = val_loss
-                best_model = model
+            best_model.fit(X_train, Y_train, epochs=50, batch_size=32, verbose=2, validation_data=(X_val, Y_val), callbacks=[early_stopping])
         
         best_model.save(f'models/{token_name}_{horizon}_model.h5')
         joblib.dump(scaler, f'models/{token_name}_{horizon}_scaler.pkl')
