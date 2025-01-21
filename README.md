@@ -7,7 +7,7 @@ git clone https://github.com/PeterPedegru/allora-worker-x-reputer.git
 cd allora-worker-x-reputer
 ```
 
-## 2. Install Docker and necessary libraries
+## 2. Install Docker and necessary libraries gm
 
 ```bash
 chmod +x init.sh
